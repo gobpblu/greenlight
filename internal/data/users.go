@@ -2,6 +2,7 @@ package data
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"time"
@@ -13,6 +14,8 @@ import (
 var (
 	ErrDuplicateEmail = errors.New("duplicate email")
 )
+
+var AnonymousUser = &User{}
 
 type User struct {
 	ID        int64     `json:"id"`
@@ -31,6 +34,10 @@ type password struct {
 
 type UserModel struct {
 	DB *sql.DB
+}
+
+func (u *User) IsAnonymous() bool {
+	return u == AnonymousUser
 }
 
 func (p *password) Set(plaintextPassword string) error {
@@ -111,7 +118,7 @@ func (m UserModel) Insert(user *User) error {
 
 func (m UserModel) GetByEmail(email string) (*User, error) {
 	query := `
-	SELECT id, created_id, name, email, password_hash, activated, version
+	SELECT id, created_at, name, email, password_hash, activated, version
 	FROM users
 	WHERE email = $1`
 
@@ -178,4 +185,45 @@ func (m UserModel) Update(user *User) error {
 
 func IsDuplicateError(err error) bool {
 	return err.Error() == `pq: duplicate key value violates unique constraint "users_email_key"`
+}
+
+func (m UserModel) GetForToken(tokenScope, tokenPlaintext string) (*User, error) {
+	tokenHash := sha256.Sum256([]byte(tokenPlaintext))
+
+	query := `
+	SELECT users.id, users.created_at, users.name, users.email, users.password_hash, users.activated, users.version
+	FROM users
+	INNER JOIN tokens
+	ON users.id = tokens.user_id
+	WHERE tokens.hash = $1
+	AND tokens.scope = $2
+	AND tokens.expiry > $3`
+
+	args := []any{tokenHash[:], tokenScope, time.Now()}
+
+	var user User
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	err := m.DB.QueryRowContext(ctx, query, args...).Scan(
+		&user.ID,
+		&user.CreatedAt,
+		&user.Name,
+		&user.Email,
+		&user.Password.hash,
+		&user.Activated,
+		&user.Version,
+	)
+
+	if err != nil {
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return nil, ErrRecordNotFound
+		default:
+			return nil, err
+		}
+	}
+
+	return &user, nil
 }
