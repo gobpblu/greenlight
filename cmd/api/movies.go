@@ -61,7 +61,7 @@ func (app *application) showMovieHandler(w http.ResponseWriter, r *http.Request)
 		app.notFoundResponse(w, r)
 		return
 	}
-	
+
 	movie, err := app.models.Movies.Get(id)
 	if err != nil {
 		switch {
